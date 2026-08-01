@@ -15,54 +15,52 @@ public class AiAnalysisService {
         this.restTemplate = restTemplate;
     }
 
-    // public String analyzeFile(File file) {
-    //     try {
-    //         // 1. Read the actual code from the file
-    //         String content = Files.readString(file.toPath());
+    /**
+     * Overloaded method to process raw content fetched straight from GitHub API.
+     * This avoids reading/writing anything to your local hard drive.
+     */
+    public String analyzeFileContent(String content, String filename) {
+        try {
+            if (content == null || content.trim().isEmpty()) {
+                return "Empty file content - no analysis needed.";
+            }
 
-    //         if (content.trim().isEmpty()) {
-    //         return "Empty file - no analysis needed.";
-    //     }
-    //         // 2. Prepare the payload for Python
-    //         Map<String, String> request = Map.of(
-    //             "file_name", file.getName(),
-    //             "code", content
-    //         );
+            // 1. Package the network payload for your Python node
+            Map<String, String> request = Map.of(
+                "file_name", filename, 
+                "code", content
+            );
 
-    //         // 3. POST to Python and get the summary
-    //         Map<String, String> response = restTemplate.postForObject(AI_SERVICE_URL, request, Map.class);
+            // 2. Dispatch a POST request to your Python backend
+            Map<String, String> response = restTemplate.postForObject(AI_SERVICE_URL, request, Map.class);
             
-    //         return response != null ? response.get("summary") : "No summary generated.";
+            // 3. Extract matching map responses safely
+            if (response != null && response.containsKey("analysis")) {
+                return response.get("analysis");
+            } else if (response != null && response.containsKey("summary")) {
+                // Defensive backup check in case your Python key returns "summary" instead
+                return response.get("summary");
+            } else {
+                System.err.println("❌ Python node returned mismatched structure: " + response);
+                return "AI Error: Unexpected structural response mapping.";
+            }
 
-    //     } catch (Exception e) {
-    //         System.err.println("AI Analysis Error for " + file.getName() + ": " + e.getMessage());
-    //         return "Analysis failed.";
-    //     }
-    // }
-    public String analyzeFile(File file) {
-    try {
-        String content = Files.readString(file.toPath());
-        if (content.trim().isEmpty()) return "Empty file.";
-
-        Map<String, String> request = Map.of(
-            "file_name", file.getName(), 
-            "code", content
-        );
-
-        // Call Python
-        Map<String, String> response = restTemplate.postForObject(AI_SERVICE_URL, request, Map.class);
-        
-        // --- FIX HERE: Change "summary" to "analysis" ---
-        if (response != null && response.containsKey("analysis")) {
-            return response.get("analysis");
-        } else {
-            System.err.println("❌ Python sent back: " + response);
-            return "AI Error: Key mismatch";
+        } catch (Exception e) {
+            System.err.println("❌ Remote AI Pipeline Ingestion Failure for " + filename + ": " + e.getMessage());
+            return "Analysis processing node failed.";
         }
-
-    } catch (Exception e) {
-        System.err.println("❌ AI Analysis Error: " + e.getMessage());
-        return "Analysis failed.";
     }
-}
+
+    /**
+     * Original method tracking physical system workspace environments.
+     */
+    public String analyzeFile(File file) {
+        try {
+            String content = Files.readString(file.toPath());
+            return analyzeFileContent(content, file.getName()); // Forward execution payload cleanly
+        } catch (Exception e) {
+            System.err.println("❌ Local Disk Reading Failure: " + e.getMessage());
+            return "Analysis failed.";
+        }
+    }
 }

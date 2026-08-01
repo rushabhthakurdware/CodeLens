@@ -37,5 +37,13 @@ public class FileMetadata {
     private Project project;
 
     private LocalDateTime lastAnalyzed;
+    @Column(name = "tokens_consumed")
+    private Long tokensConsumed = 0L;
+
+    @Column(name = "tokens_saved")
+    private Long tokensSaved = 0L;
+
+    // If you aren't using Lombok's @Data, add the standard getters/setters for
+    // these two fields here!
 
 }

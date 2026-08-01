@@ -1,4 +1,4 @@
-package com.codelens.utils;
+package com.codelens.backend.utils;
 
 import java.io.FileInputStream;
 import java.security.MessageDigest;

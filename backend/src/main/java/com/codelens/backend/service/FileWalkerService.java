@@ -3,65 +3,56 @@ package com.codelens.backend.service;
 import java.util.ArrayList;
 import java.util.List;
 import java.io.File;
-import java.nio.file.Files;
-import java.util.Scanner;
 import org.springframework.stereotype.Service;
 
 @Service
 public class FileWalkerService {
-    
-    public List<File> getInterestingFiles(File rootDirectory) {
+
+    public List<File> getInterestingFiles(File rootDir, List<String> userSelectedExts) {
         List<File> result = new ArrayList<>();
-        scan(rootDirectory, result);
+        
+        // Use user selections, or default to a safe list if null/empty
+        List<String> filters = (userSelectedExts == null || userSelectedExts.isEmpty()) 
+                               ? List.of("java", "py", "js", "jsx", "ts", "tsx") 
+                               : userSelectedExts;
+
+        if (rootDir.exists() && rootDir.isDirectory()) {
+            scan(rootDir, result, filters);
+        }
         return result;
     }
-    private void scan(File file , List<File> fileList){
-        File[]children = file.listFiles();
 
-        if(children == null ) return ;
+    private void scan(File file, List<File> fileList, List<String> filters) {
+        File[] children = file.listFiles();
+        if (children == null) return;
 
-        for(File child :children){
-            if(child.isDirectory()){
-               if (!child.getName().equals(".git") && 
-                !child.getName().equals("node_modules") && 
-                !child.getName().equals("target") && 
-                !child.getName().equals(".idea") &&
-                !child.getName().equals("build")) {
-                
-                scan(child, fileList);
-            }
-            }else{
-                if(isIntrestingFile(child.getName())){
+        for (File child : children) {
+            if (child.isDirectory()) {
+                // Skip heavy/system folders
+                if (!isSystemDirectory(child.getName())) {
+                    scan(child, fileList, filters);
+                }
+            } else {
+                if (isUserRequestedFile(child.getName(), filters)) {
                     fileList.add(child);
                 }
             }
         }
-
     }
-    private boolean isIntrestingFile(String fileName){
+
+    private boolean isSystemDirectory(String name) {
+        return name.equals(".git") || 
+               name.equals("node_modules") || 
+               name.equals("target") || 
+               name.equals(".idea") ||
+               name.equals("build") ||
+               name.equals("dist") ||
+               name.equals(".venv");
+    }
+
+    private boolean isUserRequestedFile(String fileName, List<String> filters) {
         String name = fileName.toLowerCase();
-        return name.endsWith(".java")
-            ||name.endsWith(".jsx")
-            ||name.endsWith(".py")
-            ||name.endsWith(".js")
-            ||name.endsWith(".cpp")
-            ||name.endsWith(".c")
-            ||name.endsWith(".cs")
-            ||name.endsWith(".xml")
-            ||name.endsWith(".properties")
-            ||name.endsWith(".jsx")
-            ||name.endsWith(".ts")
-            ||name.endsWith(".tsx")
-            ||name.endsWith(".go")
-            ||name.endsWith(".rb")
-            ||name.endsWith(".php")
-            ||name.endsWith(".swift")
-            ||name.endsWith(".kt")
-            ||name.endsWith(".kts")
-            ||name.endsWith(".scala")
-            ||name.endsWith(".rs")
-            ||name.endsWith(".dart")
-            ;
+        // Check if the file ends with any of the selected extensions (e.g., ".java")
+        return filters.stream().anyMatch(ext -> name.endsWith("." + ext.toLowerCase()));
     }
-
 }

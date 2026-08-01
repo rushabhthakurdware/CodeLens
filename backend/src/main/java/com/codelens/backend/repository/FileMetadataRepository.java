@@ -6,6 +6,8 @@ import java.util.Optional;
 import java.util.List;
 
 public interface FileMetadataRepository extends JpaRepository<FileMetadata, Long> {
+    Optional<FileMetadata> findFirstByHash(String hash);
     Optional<FileMetadata> findByHash(String hash);
     List<FileMetadata> findByProjectId(Long projectId); // Add this line
+    void deleteByProjectId(Long projectId);
 }

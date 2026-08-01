@@ -2,38 +2,34 @@ package com.codelens.backend.controller;
 
 import java.util.stream.Collectors;
 import java.util.List;
-import java.util.Optional;
-import java.io.File;
-import com.codelens.backend.service.FileWalkerService;
-import com.codelens.backend.service.AiAnalysisService;
-import com.codelens.backend.model.FileMetadata;
-import com.codelens.backend.dto.FileMetadataResponse; // You'll create this
+import com.codelens.backend.dto.FileMetadataResponse;
 import com.codelens.backend.dto.ProjectRequest;
 import com.codelens.backend.dto.ProjectResponse;
 import com.codelens.backend.model.Project;
 import com.codelens.backend.service.ProjectService;
-import com.codelens.backend.service.GitClonerService;
-import com.codelens.utils.HashUtils;
+import com.codelens.backend.utils.GitHubUrlParser; // Singular .util
+import com.codelens.backend.service.AiAnalysisService;
+import com.codelens.backend.service.GitHubApiService;
 
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
-import org.springframework.web.bind.annotation.*;
 
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.bind.annotation.*;
+import java.util.Map;
+
+@CrossOrigin(origins = "http://localhost:5173")
 @RestController
 @RequestMapping("/api/projects")
 @RequiredArgsConstructor
 public class ProjectController {
 
     private final ProjectService projectService;
-    private final GitClonerService gitClonerService;
-    private final FileWalkerService fileWalkerService;
     private final AiAnalysisService aiAnalysisService;
-    // REMOVED: FileMetadataRepository (talk to ProjectService instead)
 
-    /**
-     * GET Files for a specific project
-     * Uses DTO to prevent Infinite JSON Recursion
-     */
+    @Autowired
+    private GitHubApiService gitHubApiService;
+
     @GetMapping("/{id}/files")
     public List<FileMetadataResponse> getProjectFiles(@PathVariable Long id) {
         return projectService.getFilesByProjectId(id).stream()
@@ -67,44 +63,77 @@ public class ProjectController {
                 projectRequest.getUrl(),
                 projectRequest.getDescription());
 
-        java.nio.file.Path rootPath = java.nio.file.Paths.get("temp-repos", "project-" + savedProject.getId())
-                .toAbsolutePath().normalize();
-        File rootDir = rootPath.toFile();
-
         try {
-            gitClonerService.cloneAndAnalyze(savedProject.getGithubUrl(), savedProject.getId());
-            List<File> files = fileWalkerService.getInterestingFiles(rootDir);
+            GitHubUrlParser.RepoDetails repoDetails = GitHubUrlParser.parse(savedProject.getGithubUrl());
 
-            for (File file : files) {
-                String hash = HashUtils.calculateHash(file);
-                
-                // Use the service to check for existing metadata
-                if (projectService.isAlreadyAnalyzed(hash)) {
-                    System.out.println(">>> skipping AI call for " + file.getName() + " (Already Analyzed)");
-                } else {
-                    System.out.println(">>> Calling AI for: " + file.getName());
-                    String summary = aiAnalysisService.analyzeFile(file);
-                    
-                    projectService.saveFileMetadataWithSummary(
+            List<String> filters = projectRequest.getAllowedExtensions();
+            if (filters == null || filters.isEmpty()) {
+                filters = List.of("java", "py", "js", "jsx", "ts", "tsx");
+            }
+
+            System.out.println(">>> Querying remote file mapping layout for workspace...");
+            List<GitHubApiService.RemoteFileItem> remoteFiles = gitHubApiService.fetchRepositoryTree(
+                    repoDetails.getOwner(),
+                    repoDetails.getRepo(),
+                    projectRequest.getGithubToken(),
+                    filters);
+
+            System.out.println(">>> Filtered scan complete. Target matches: " + remoteFiles.size());
+
+            for (GitHubApiService.RemoteFileItem remoteFile : remoteFiles) {
+                String fileHash = remoteFile.sha;
+
+                if (projectService.isAlreadyAnalyzed(fileHash)) {
+                    System.out.println(">>> [CACHE HIT] Reusing summary for: " + remoteFile.path);
+                    String cachedSummary = projectService.getExistingSummaryByHash(fileHash);
+
+                    // Optimized baseline: estimate tokens saved using a 400-token standard file size baseline
+                    // to prevent making an expensive network call to GitHub for a file we are skipping!
+                    long estimatedSavedTokens = (cachedSummary != null) ? (cachedSummary.length() / 4) + 250 : 300;
+
+                    // Fixed Method Name to match ProjectService signature
+                    projectService.saveFileMetadataWithSummaryAndTokens(
                             savedProject,
-                            file.getName(),
-                            file.getAbsolutePath(),
-                            hash,
-                            summary);
+                            remoteFile.path,
+                            remoteFile.downloadUrl,
+                            fileHash,
+                            cachedSummary,
+                            0L,
+                            estimatedSavedTokens
+                    );
+                } else {
+                    System.out.println(">>> [CACHE MISS] Fetching target content: " + remoteFile.path);
+                    String codeContent = gitHubApiService.fetchRawFileContent(remoteFile.downloadUrl,
+                            projectRequest.getGithubToken());
 
-                    // Throttle for Free Tier API
-                    try { Thread.sleep(2000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                    if (codeContent != null) {
+                        System.out.println(">>> Sending code blocks to Python processing node...");
+                        String summary = aiAnalysisService.analyzeFileContent(codeContent, remoteFile.path);
+
+                        long actualTokens = (codeContent.length() / 4) + (summary.length() / 4) + 50;
+                        
+                        // Fixed Method Name to match ProjectService signature
+                        projectService.saveFileMetadataWithSummaryAndTokens(
+                                savedProject,
+                                remoteFile.path,
+                                remoteFile.downloadUrl,
+                                fileHash,
+                                summary,
+                                actualTokens,
+                                0L);
+
+                        try {
+                            Thread.sleep(2000);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                    }
                 }
             }
 
         } catch (Exception e) {
-            System.err.println("Error processing project " + savedProject.getId() + ": " + e.getMessage());
-            throw new RuntimeException("Ingestion failed", e);
-        } finally {
-            if (rootDir.exists()) {
-                deleteDirectory(rootDir);
-                System.out.println(">>> Cleaned up workspace for Project ID: " + savedProject.getId());
-            }
+            System.err.println("❌ Project ingestion processing crashed on ID: " + savedProject.getId() + " - " + e.getMessage());
+            throw new RuntimeException("API parsing Pipeline exception occurring", e);
         }
 
         return ProjectResponse.builder()
@@ -115,13 +144,19 @@ public class ProjectController {
                 .build();
     }
 
-    private void deleteDirectory(File directory) {
-        File[] allContents = directory.listFiles();
-        if (allContents != null) {
-            for (File file : allContents) {
-                deleteDirectory(file);
-            }
-        }
-        directory.delete();
+    @GetMapping("/analytics/tokens")
+    public Map<String, Long> getTokenAnalytics() {
+        long totalConsumed = projectService.getAllFilesMetadata().stream().mapToLong(f -> f.getTokensConsumed()).sum();
+        long totalSaved = projectService.getAllFilesMetadata().stream().mapToLong(f -> f.getTokensSaved()).sum();
+        
+        return Map.of(
+            "tokensConsumed", totalConsumed,
+            "tokensSaved", totalSaved
+        );
+    }
+
+    @DeleteMapping("/{id}")
+    public void deleteProject(@PathVariable Long id) {
+        projectService.deleteProject(id);
     }
 }
